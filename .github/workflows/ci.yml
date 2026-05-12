@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/randomquotes-k8s
+  GITOPS_REPO: MazArslan/randomquotes-gitops
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag (short SHA)
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          IMAGE_TAG="sha-${SHORT_SHA}"
+          IMAGE_LC=$(echo "${{ env.IMAGE }}" | tr '[:upper:]' '[:lower:]')
+          echo "image_tag=${IMAGE_TAG}"   >> "$GITHUB_OUTPUT"
+          echo "image_lc=${IMAGE_LC}"     >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (for arm64 build)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image (linux/amd64 + linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: src/RandomQuotes.Web/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image_lc }}:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.image_lc }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  bump-gitops-dev:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Bump dev image tag
+        working-directory: gitops
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          yq -i ".images[0].newTag = \"${IMAGE_TAG}\"" overlays/dev/kustomization.yaml
+          # Strip the trailing "# bumped by CI..." comment if yq preserved an older value
+          cat overlays/dev/kustomization.yaml
+
+      - name: Commit and push gitops update
+        working-directory: gitops
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No change to gitops repo; skipping commit."
+            exit 0
+          fi
+          git add overlays/dev/kustomization.yaml
+          git commit -m "ci(dev): bump randomquotes image to ${IMAGE_TAG}"
+          git push
