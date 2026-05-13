@@ -12,8 +12,7 @@ Kubernetes manifests live in the separate GitOps repo:
 push to main ─▶ .github/workflows/ci.yml
                    1. Build multi-arch image (linux/amd64, linux/arm64)
                    2. Push to ghcr.io/mazarslan/randomquotes-k8s:sha-<short-sha>
-                   3. Commit updated image tag to overlays/dev/kustomization.yaml
-                      in the gitops repo
+                   3. Commit updated image tag to overlays/dev/kustomization.yaml in the gitops repo
                                        │
                                        ▼
                             ArgoCD detects the gitops commit
